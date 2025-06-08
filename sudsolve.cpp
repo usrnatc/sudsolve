@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <string.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -43,6 +42,15 @@ struct DLX {
     u32 SolutionSize;
 };
 
+void inline
+MemCpy(void* _Dst, const void* _Src, u64 N)
+{
+    u8* Dst = (u8*) _Dst;
+    const u8* Src = (const u8*) _Src;
+
+    for (u64 I = 0; I < N; ++I)
+        Dst[I] = Src[I];
+}
 
 void 
 AddNode(DLX *Dlx, u16 RowIdx, u16 ColIdx) 
@@ -228,16 +236,16 @@ main(int ArgC, char** ArgV)
     u32 OutputSize = P + TotalPuzzles * 164;
     char* Output = (char*) malloc(OutputSize + 2);
 
-    memcpy(Output, String, P);
+    MemCpy(Output, String, P);
 
     u32 InOffs = P;
     u32 OutOffs = P;
 
     for (u32 I = 0; I <= TotalPuzzles; ++I) {
-        memcpy(Output + OutOffs, String + InOffs, 81);
+        MemCpy(Output + OutOffs, String + InOffs, 81);
         OutOffs += 81;
         Output[OutOffs++] = ',';
-        memcpy(Output + OutOffs, String + InOffs, 81);
+        MemCpy(Output + OutOffs, String + InOffs, 81);
 
         char* Board = Output + OutOffs;
         b8 InitialRowHas[SIZE * (SIZE + 1)] = {};
