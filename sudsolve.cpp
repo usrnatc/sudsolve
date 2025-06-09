@@ -1,46 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
-typedef int16_t i16;
-typedef u8 b8;
-
-#if !defined(TRUE)
-    #define TRUE  1
-    #define FALSE 0
-#endif
-
-#define SIZE            9
-#define BOX_SIZE        3
-#define MAX_ROWS        (SIZE * SIZE * SIZE)
-#define MAX_COLS        (4 * SIZE * SIZE)
-#define MAX_DLX_NODES   (MAX_ROWS * 4)
-#define UNKNOWN_CELL    '0'
-
-struct Node {
-    Node* Left;
-    Node* Right;
-    Node* Up;
-    Node* Down;
-    Node* Column;
-    u32 Count;
-    i16 RowID;
-    i16 ColID;
-};
-
-struct DLX {
-    Node* Rows[MAX_ROWS];
-    Node Columns[MAX_COLS];
-    Node NodeArena[MAX_DLX_NODES];
-    i16 Solution[SIZE * SIZE];
-    Node Head;
-    u32 NodesUsedCount;
-    u32 SolutionSize;
-};
+#include "sudsolve.h"
 
 void inline
 MemCpy(void* _Dst, const void* _Src, u64 N)
@@ -53,32 +14,35 @@ MemCpy(void* _Dst, const void* _Src, u64 N)
 }
 
 void 
-AddNode(DLX *Dlx, u16 RowIdx, u16 ColIdx) 
+AddRow(DLX *Dlx, u16 RowIdx, u16 ColIdx[4]) 
 {
-    if (Dlx->NodesUsedCount >= MAX_DLX_NODES)
+    if (Dlx->NodesUsedCount + 4 > MAX_DLX_NODES)
         return;
 
-    Node* NewNode = &Dlx->NodeArena[Dlx->NodesUsedCount++];
+    u32 BaseIdx = Dlx->NodesUsedCount;
+    Dlx->NodesUsedCount += 4;
 
-    NewNode->RowID = RowIdx;
-    NewNode->ColID = ColIdx;
-    NewNode->Column = &Dlx->Columns[ColIdx];
-    ++Dlx->Columns[ColIdx].Count;
-    NewNode->Down = &Dlx->Columns[ColIdx];
-    NewNode->Up = Dlx->Columns[ColIdx].Up;
-    Dlx->Columns[ColIdx].Up->Down = NewNode;
-    Dlx->Columns[ColIdx].Up = NewNode;
+    for (u8 K = 0; K < 4; ++K) {
+        Node* NewNode = &Dlx->NodeArena[BaseIdx + K];
 
-    if (!Dlx->Rows[RowIdx]) {
-        NewNode->Left = NewNode;
-        NewNode->Right = NewNode;
-        Dlx->Rows[RowIdx] = NewNode;
-    } else {
-        NewNode->Left = Dlx->Rows[RowIdx]->Left;
-        NewNode->Right = Dlx->Rows[RowIdx];
-        Dlx->Rows[RowIdx]->Left->Right = NewNode;
-        Dlx->Rows[RowIdx]->Left = NewNode;
+        NewNode->RowID = RowIdx;
+        NewNode->ColID = ColIdx[K];
+        NewNode->Column = &Dlx->Columns[ColIdx[K]];
+        NewNode->Down = NewNode->Column;
+        NewNode->Up = NewNode->Column->Up;
+        NewNode->Column->Up->Down = NewNode;
+        NewNode->Column->Up = NewNode;
+        ++NewNode->Column->Count;
     }
+
+    for (u8 K = 0; K < 4; ++K) {
+        Node* HNode = &Dlx->NodeArena[BaseIdx + K];
+
+        HNode->Left = &Dlx->NodeArena[BaseIdx + (K + 3) % 4];
+        HNode->Right = &Dlx->NodeArena[BaseIdx + (K + 1) % 4];
+    }
+
+    Dlx->Rows[RowIdx] = &Dlx->NodeArena[BaseIdx];
 }
 
 void
@@ -116,19 +80,20 @@ IsCandidateValid(
     u16 R, 
     u16 C, 
     u16 Num, 
-    b8* InitialRowHas,
-    b8* InitialColHas,
-    b8* InitialBoxHas
+    u16* InitialRowHas,
+    u16* InitialColHas,
+    u16* InitialBoxHas
 ) {
-    int BoxIndex = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
+    u32 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
+    u16 Mask = (1 << Num);
 
-    if (InitialRowHas[R * (SIZE + 1) + Num])
+    if (InitialRowHas[R] & Mask)
         return FALSE;
 
-    if (InitialColHas[C * (SIZE + 1) + Num])
+    if (InitialColHas[C] & Mask)
         return FALSE;
 
-    if (InitialBoxHas[BoxIndex * (SIZE + 1) + Num])
+    if (InitialBoxHas[BoxIdx] & Mask)
         return FALSE;
 
     return TRUE;
@@ -248,9 +213,9 @@ main(int ArgC, char** ArgV)
         MemCpy(Output + OutOffs, String + InOffs, 81);
 
         char* Board = Output + OutOffs;
-        b8 InitialRowHas[SIZE * (SIZE + 1)] = {};
-        b8 InitialColHas[SIZE * (SIZE + 1)] = {};
-        b8 InitialBoxHas[SIZE * (SIZE + 1)] = {};
+        u16 InitialRowHas[SIZE] = {};
+        u16 InitialColHas[SIZE] = {};
+        u16 InitialBoxHas[SIZE] = {};
         DLX Dlx = {};
 
         Dlx.Head.Left = &Dlx.Head;
@@ -277,54 +242,44 @@ main(int ArgC, char** ArgV)
                     u8 Val = Board[RInit * SIZE + CInit] - '0';
                     u8 BoxIdx = (RInit / BOX_SIZE) * BOX_SIZE + (CInit / BOX_SIZE);
 
-                    InitialRowHas[RInit * (SIZE + 1) + Val] = TRUE;
-                    InitialColHas[CInit * (SIZE + 1) + Val] = TRUE;
-                    InitialBoxHas[BoxIdx * (SIZE + 1) + Val] = TRUE;
-                }
-            }
-        }
-
-        for (u8 I = 0; I < SIZE; ++I) {
-            for (u8 J = 0; J < SIZE; ++J) {
-                if (Board[I * SIZE + J] == UNKNOWN_CELL) {
-                    for (u8 Num = 1; Num <= SIZE; Num++) {
-                        if (!IsCandidateValid(I, J, Num, InitialRowHas, InitialColHas, InitialBoxHas))
-                            continue;
-
-                        u16 RowIdx = I * SIZE * SIZE + J * SIZE + (Num - 1);
-                        u16 BoxIdx = (I / BOX_SIZE) * BOX_SIZE + (J / BOX_SIZE);
-                        u16 C1CellPos = I * SIZE + J;
-                        u16 C2RowNum  = SIZE * SIZE + I * SIZE + (Num - 1);
-                        u16 C3ColNum  = 2 * SIZE * SIZE + J * SIZE + (Num - 1);
-                        u16 C4BoxNum  = 3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1);
-                        
-                        AddNode(&Dlx, RowIdx, C1CellPos);
-                        AddNode(&Dlx, RowIdx, C2RowNum);
-                        AddNode(&Dlx, RowIdx, C3ColNum);
-                        AddNode(&Dlx, RowIdx, C4BoxNum);
-                    }
-                } else {
-                    u8 Num = Board[I * SIZE + J] - '0';
-                    u16 RowIdx = I * SIZE * SIZE + J * SIZE + (Num - 1);
-                    u16 BoxIdx = (I / BOX_SIZE) * BOX_SIZE + (J / BOX_SIZE);
-                    u16 C1CellPos = I * SIZE + J;
-                    u16 C2RowNum  = SIZE * SIZE + I * SIZE + (Num - 1);
-                    u16 C3ColNum  = 2 * SIZE * SIZE + J * SIZE + (Num - 1);
-                    u16 C4BoxNum  = 3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1);
-
-                    AddNode(&Dlx, RowIdx, C1CellPos);
-                    AddNode(&Dlx, RowIdx, C2RowNum);
-                    AddNode(&Dlx, RowIdx, C3ColNum);
-                    AddNode(&Dlx, RowIdx, C4BoxNum);
+                    InitialRowHas[RInit] |= (1 << Val);
+                    InitialColHas[CInit] |= (1 << Val);
+                    InitialBoxHas[BoxIdx] |= (1 << Val);
                 }
             }
         }
 
         for (u8 R = 0; R < SIZE; ++R) {
             for (u8 C = 0; C < SIZE; ++C) {
-                if (Board[R * SIZE + C] != UNKNOWN_CELL) {
+                if (Board[R * SIZE + C] == UNKNOWN_CELL) {
+                    for (u8 Num = 1; Num <= SIZE; Num++) {
+                        if (!IsCandidateValid(R, C, Num, InitialRowHas, InitialColHas, InitialBoxHas))
+                            continue;
+
+                        u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
+                        u16 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
+                        u16 ColIdx[4] = {
+                            (u16) (R * SIZE + C),
+                            (u16) (SIZE * SIZE + R * SIZE + (Num - 1)),
+                            (u16) (2 * SIZE * SIZE + C * SIZE + (Num - 1)),
+                            (u16) (3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1))
+                        };
+
+                        AddRow(&Dlx, RowIdx, ColIdx);
+                    }
+                } else {
                     u8 Num = Board[R * SIZE + C] - '0';
                     u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
+                    u16 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
+                    u16 ColIdx[4] = {
+                        (u16) (R * SIZE + C),
+                        (u16) (SIZE * SIZE + R * SIZE + (Num - 1)),
+                        (u16) (2 * SIZE * SIZE + C * SIZE + (Num - 1)),
+                        (u16) (3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1))
+                    };
+
+                    AddRow(&Dlx, RowIdx, ColIdx);
+
                     Node *ChosenRowNode = Dlx.Rows[RowIdx];
                     
                     if (!ChosenRowNode)
@@ -342,7 +297,7 @@ main(int ArgC, char** ArgV)
                 }
             }
         }
-        
+
         if (Solve(&Dlx)) {
             for (u32 K = 0; K < Dlx.SolutionSize; ++K) {
                 u16 RowID = Dlx.Solution[K];
