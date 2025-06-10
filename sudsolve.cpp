@@ -197,7 +197,8 @@ main(int ArgC, char** ArgV)
         ++P;
     ++P;
 
-    u32 TotalPuzzles = (u32) ((PuzzleInputSize - P) / 82);
+    u32 PuzzleDataSize = PuzzleInputSize - P;
+    u32 TotalPuzzles = (PuzzleDataSize + 81) / 82;
     u32 OutputSize = P + TotalPuzzles * 164;
     char* Output = (char*) malloc(OutputSize + 2);
 
@@ -206,7 +207,7 @@ main(int ArgC, char** ArgV)
     u32 InOffs = P;
     u32 OutOffs = P;
 
-    for (u32 I = 0; I <= TotalPuzzles; ++I) {
+    for (u32 I = 0; I < TotalPuzzles; ++I) {
         MemCpy(Output + OutOffs, String + InOffs, 81);
         OutOffs += 81;
         Output[OutOffs++] = ',';
