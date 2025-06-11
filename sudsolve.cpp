@@ -1,5 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+
+#if defined(_WIN32)
+    #define WIN32_LEAN_AND_MEAN
+    #include <windows.h>
+#elif defined(__linux__)
+    #include <sched.h>
+    #include <sys/stat.h>
+    #include <fcntl.h>
+    #include <unistd.h>
+    #include <pthread.h>
+#endif
 
 #include "sudsolve.h"
 
@@ -11,6 +23,15 @@ MemCpy(void* _Dst, const void* _Src, u64 N)
 
     for (u64 I = 0; I < N; ++I)
         Dst[I] = Src[I];
+}
+
+void inline
+MemSet(void* _Dst, const u8 Val, u64 N)
+{
+    u8* Dst = (u8*) _Dst;
+
+    for (u64 I = 0; I < N; ++I)
+        Dst[I] = Val;
 }
 
 void 
@@ -163,113 +184,268 @@ PrintBoard(char* Board)
     printf("\n");
 }
 
-int
-main(int ArgC, char** ArgV)
+#if defined(_WIN32)
+
+void
+FreeFileData(void* FileData)
 {
-    if (ArgC != 2) {
-        printf("Usage: ./sudsolve <sudoku_file>\n");
+    if (FileData)
+        VirtualFree(FileData, 0, MEM_RELEASE);
+}
 
-        return 1;
-    }
+FileContents
+ReadEntireFile(char* FileName)
+{
+    FileContents Result = {};
+    HANDLE FileHandle = CreateFile(FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 
-    FILE* PuzzleFile = fopen(ArgV[1], "rb");
+    if (FileHandle != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER FileSize;
 
-    if (!PuzzleFile) {
-        printf("Could not open file \"%s\"\n", ArgV[1]);
+        if (GetFileSizeEx(FileHandle, &FileSize)) {
+            u32 FileSize32 = (u32) FileSize.QuadPart;
 
-        return 2;
-    }
+            Result.Data = VirtualAlloc(NULL, FileSize32, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 
-    fseek(PuzzleFile, 0, SEEK_END);
+            if (Result.Data) {
+                u32 BytesRead;
 
-    u32 PuzzleInputSize = ftell(PuzzleFile);
-
-    fseek(PuzzleFile, 0, SEEK_SET);
-
-    char* String = (char*) malloc(PuzzleInputSize + 1);
-
-    fread(String, 1, PuzzleInputSize, PuzzleFile);
-    fclose(PuzzleFile);
-
-    u32 P = 0;
-
-    while (String[P] != '\n')
-        ++P;
-    ++P;
-
-    u32 PuzzleDataSize = PuzzleInputSize - P;
-    u32 TotalPuzzles = (PuzzleDataSize + 81) / 82;
-    u32 OutputSize = P + TotalPuzzles * 164;
-    char* Output = (char*) malloc(OutputSize + 2);
-
-    MemCpy(Output, String, P);
-
-    u32 InOffs = P;
-    u32 OutOffs = P;
-
-    for (u32 I = 0; I < TotalPuzzles; ++I) {
-        MemCpy(Output + OutOffs, String + InOffs, 81);
-        OutOffs += 81;
-        Output[OutOffs++] = ',';
-        MemCpy(Output + OutOffs, String + InOffs, 81);
-
-        char* Board = Output + OutOffs;
-        u16 InitialRowHas[SIZE] = {};
-        u16 InitialColHas[SIZE] = {};
-        u16 InitialBoxHas[SIZE] = {};
-        DLX Dlx = {};
-
-        Dlx.Head.Left = &Dlx.Head;
-        Dlx.Head.Right = &Dlx.Head;
-        Dlx.Head.Up = &Dlx.Head;
-        Dlx.Head.Down = &Dlx.Head;
-        Dlx.Head.ColID = -1;
-
-        for (u16 I = 0; I < MAX_COLS; ++I) {
-            Node *ColNode = &Dlx.Columns[I];
-
-            ColNode->ColID = I;
-            ColNode->Up = ColNode;
-            ColNode->Down = ColNode;
-            ColNode->Left = Dlx.Head.Left;
-            ColNode->Right = &Dlx.Head;
-            Dlx.Head.Left->Right = ColNode;
-            Dlx.Head.Left = ColNode;
-        }
-
-        for (u8 RInit = 0; RInit < SIZE; ++RInit) {
-            for (u8 CInit = 0; CInit < SIZE; ++CInit) {
-                if (Board[RInit * SIZE + CInit] != UNKNOWN_CELL) {
-                    u8 Val = Board[RInit * SIZE + CInit] - '0';
-                    u8 BoxIdx = (RInit / BOX_SIZE) * BOX_SIZE + (CInit / BOX_SIZE);
-
-                    InitialRowHas[RInit] |= (1 << Val);
-                    InitialColHas[CInit] |= (1 << Val);
-                    InitialBoxHas[BoxIdx] |= (1 << Val);
-                }
-            }
-        }
-
-        for (u8 R = 0; R < SIZE; ++R) {
-            for (u8 C = 0; C < SIZE; ++C) {
-                if (Board[R * SIZE + C] == UNKNOWN_CELL) {
-                    for (u8 Num = 1; Num <= SIZE; Num++) {
-                        if (!IsCandidateValid(R, C, Num, InitialRowHas, InitialColHas, InitialBoxHas))
-                            continue;
-
-                        u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
-                        u16 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
-                        u16 ColIdx[4] = {
-                            (u16) (R * SIZE + C),
-                            (u16) (SIZE * SIZE + R * SIZE + (Num - 1)),
-                            (u16) (2 * SIZE * SIZE + C * SIZE + (Num - 1)),
-                            (u16) (3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1))
-                        };
-
-                        AddRow(&Dlx, RowIdx, ColIdx);
+                if (ReadFile(FileHandle, Result.Data, FileSize32, (LPDWORD) &BytesRead, NULL)) {
+                    if (FileSize32 == BytesRead) {
+                        Result.DataSize = FileSize32;
+                    } else {
+                        printf("[ERROR] Failed to read entire file, truncated read\n");
+                        FreeFileData(Result.Data);
+                        Result.Data = NULL;
                     }
                 } else {
-                    u8 Num = Board[R * SIZE + C] - '0';
+                    printf("[ERROR] Failed to read file\n");
+                    FreeFileData(Result.Data);
+                    Result.Data = NULL;
+                }
+            } else {
+                printf("[ERROR] Failed to allocate memory for file\n");
+            }
+        } else {
+            printf("[ERROR] Failed to get file size\n");
+        }
+
+        CloseHandle(FileHandle);
+    } else {
+        printf("[ERROR] Failed to create file for reading\n");
+    }
+
+    return Result;
+}
+
+b8
+WriteEntireFile(char* FileName, void* Data, u32 DataSize)
+{
+    b8 Result = FALSE;
+    HANDLE FileHandle = CreateFile(FileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+
+    if (FileHandle != INVALID_HANDLE_VALUE) {
+        u32 BytesWritten;
+
+        if (WriteFile(FileHandle, Data, DataSize, (LPDWORD) &BytesWritten, NULL)) {
+            if (DataSize == BytesWritten)
+                Result = TRUE;
+            else
+                printf("[ERROR] Failed to write entire file, truncated write\n");
+        } else {
+            printf("[ERROR] Failed to write file\n");
+        }
+
+        CloseHandle(FileHandle);
+    } else {
+        printf("[ERROR] Failed to create file for writing\n");
+    }
+
+    return Result;
+}
+
+u64
+LockedAddAndReturnPreviousValue(u64 volatile* Value, u64 Delta)
+{
+    u64 Result = InterlockedExchangeAdd64((volatile LONG64*) Value, Delta);
+
+    return Result;
+}
+
+
+DWORD WINAPI
+WorkerThread(void* Parameter)
+{
+    WorkQueue* Queue = (WorkQueue*) Parameter;
+
+    while (SolvePuzzle(Queue)) {}
+
+    return 0;
+}
+
+static void
+CreateWorkThread(void* Parameter)
+{
+    DWORD ThreadID;
+    HANDLE ThreadHandle = CreateThread(NULL, 0, WorkerThread, Parameter, 0, &ThreadID);
+
+    CloseHandle(ThreadHandle);
+}
+
+static u32
+GetCPUCoreCount(void)
+{
+    SYSTEM_INFO Info;
+
+    GetSystemInfo(&Info);
+
+    return Info.dwNumberOfProcessors;
+}
+
+#elif defined(__linux__)
+
+void
+FreeFileData(void* FileData)
+{
+    if (FileData)
+        free(FileData);
+}
+
+FileContents
+ReadEntireFile(char* FileName)
+{
+    FileContents Result = {};
+    i32 FileDescriptor = open(FileName, O_RDONLY);
+
+    if (FileDescriptor > 0) {
+        struct stat StatBuf = {};
+        u32 FStateResult = fstat(FileDescriptor, &StatBuf);
+
+        if (!FStateResult) {
+            u32 FileSize = StatBuf.st_size;
+            Result.Data = malloc(FileSize);
+
+            if (Result.Data) {
+                u32 BytesRead = read(FileDescriptor, Result.Data, FileSize);
+
+                if (BytesRead == FileSize) {
+                    Result.DataSize = FileSize;
+                } else {
+                    printf("[ERROR] Failed to read entire file, truncated read\n");
+                    FreeFileData(Result.Data);
+                    Result.Data = NULL;
+                }
+            } else {
+                printf("[ERROR] Failed to allocate memory for file\n");
+            }
+        } else {
+            printf("[ERROR] Failed to get file size\n");
+        }
+
+        close(FileDescriptor);
+    } else {
+        printf("[ERROR] Failed to create file for reading\n");
+    }
+
+    return Result;
+}
+
+b8
+WriteEntireFile(char* FileName, void* Data, u32 DataSize)
+{
+    b8 Result = FALSE;
+    i32 FileDescriptor = open(FileName, O_WRONLY | O_CREAT, 0777);
+
+    if (FileDescriptor > 0) {
+        i32 BytesWritten = write(FileDescriptor, Data, DataSize);
+
+        if (BytesWritten == DataSize)
+            Result = TRUE;
+        else
+            printf("[ERROR] Failed to write entire file, truncated write\n");
+
+        close(FileDescriptor);
+    } else {
+        printf("[ERROR] Failed to open file for writing\n");
+    }
+
+    return Result;
+}
+
+u64
+LockedAddAndReturnPreviousValue(u64 volatile* Value, u64 Delta)
+{
+    u64 Result = __sync_fetch_and_add(Value, Delta);
+
+    return Result;
+}
+
+void*
+WorkerThread(void* Parameter)
+{
+    WorkQueue* Queue = (WorkQueue*) Parameter;
+
+    while (SolvePuzzle(Queue)) {}
+
+    return 0;
+}
+
+static void
+CreateWorkThread(void* Parameter)
+{
+    pthread_t ThreadID;
+
+    pthread_create(&ThreadID, NULL, WorkerThread, Parameter);
+}
+
+static u32
+GetCPUCoreCount(void)
+{
+    cpu_set_t CPUSet;
+
+    sched_getaffinity(0, sizeof(CPUSet), &CPUSet);
+
+    return CPU_COUNT(&CPUSet);
+}
+#else
+    #error "Bad Operating System"
+#endif
+
+b8
+SolvePuzzle(WorkQueue* Queue)
+{
+    u64 WorkOrderIdx = LockedAddAndReturnPreviousValue(&Queue->NextWorkOrderIndex, 1);
+
+    if (WorkOrderIdx >= Queue->WorkOrdersCount)
+        return FALSE;
+
+    WorkOrder* Order = Queue->WorkOrders + WorkOrderIdx;
+    DLX* Dlx = &Order->State;
+    char* Board = Order->Board;
+    u16* InitialRowHas = Order->InitialRowHas;
+    u16* InitialColHas = Order->InitialColHas;
+    u16* InitialBoxHas = Order->InitialBoxHas;
+
+    for (u8 RInit = 0; RInit < SIZE; ++RInit) {
+        for (u8 CInit = 0; CInit < SIZE; ++CInit) {
+            if (Board[RInit * SIZE + CInit] != UNKNOWN_CELL) {
+                u8 Val = Board[RInit * SIZE + CInit] - '0';
+                u8 BoxIdx = (RInit / BOX_SIZE) * BOX_SIZE + (CInit / BOX_SIZE);
+
+                InitialRowHas[RInit] |= (1 << Val);
+                InitialColHas[CInit] |= (1 << Val);
+                InitialBoxHas[BoxIdx] |= (1 << Val);
+            }
+        }
+    }
+
+    for (u8 R = 0; R < SIZE; ++R) {
+        for (u8 C = 0; C < SIZE; ++C) {
+            if (Board[R * SIZE + C] == UNKNOWN_CELL) {
+                for (u8 Num = 1; Num <= SIZE; Num++) {
+                    if (!IsCandidateValid(R, C, Num, InitialRowHas, InitialColHas, InitialBoxHas))
+                        continue;
+
                     u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
                     u16 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
                     u16 ColIdx[4] = {
@@ -279,62 +455,172 @@ main(int ArgC, char** ArgV)
                         (u16) (3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1))
                     };
 
-                    AddRow(&Dlx, RowIdx, ColIdx);
+                    AddRow(Dlx, RowIdx, ColIdx);
+                }
+            } else {
+                u8 Num = Board[R * SIZE + C] - '0';
+                u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
+                u16 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
+                u16 ColIdx[4] = {
+                    (u16) (R * SIZE + C),
+                    (u16) (SIZE * SIZE + R * SIZE + (Num - 1)),
+                    (u16) (2 * SIZE * SIZE + C * SIZE + (Num - 1)),
+                    (u16) (3 * SIZE * SIZE + BoxIdx * SIZE + (Num - 1))
+                };
 
-                    Node *ChosenRowNode = Dlx.Rows[RowIdx];
-                    
-                    if (!ChosenRowNode)
-                        continue;
+                AddRow(Dlx, RowIdx, ColIdx);
 
-                    Dlx.Solution[Dlx.SolutionSize++] = ChosenRowNode->RowID;
+                Node *ChosenRowNode = Dlx->Rows[RowIdx];
+                
+                if (!ChosenRowNode)
+                    continue;
 
-                    if (ChosenRowNode->Column->Right->Left == ChosenRowNode->Column)
-                         Cover(ChosenRowNode->Column);
+                Dlx->Solution[Dlx->SolutionSize++] = ChosenRowNode->RowID;
 
-                    for (Node *NodeInRow = ChosenRowNode->Right; NodeInRow != ChosenRowNode; NodeInRow = NodeInRow->Right) {
-                        if (NodeInRow->Column->Right->Left == NodeInRow->Column)
-                            Cover(NodeInRow->Column);
-                    }
+                if (ChosenRowNode->Column->Right->Left == ChosenRowNode->Column)
+                     Cover(ChosenRowNode->Column);
+
+                for (Node *NodeInRow = ChosenRowNode->Right; NodeInRow != ChosenRowNode; NodeInRow = NodeInRow->Right) {
+                    if (NodeInRow->Column->Right->Left == NodeInRow->Column)
+                        Cover(NodeInRow->Column);
                 }
             }
         }
+    }
 
-        if (Solve(&Dlx)) {
-            for (u32 K = 0; K < Dlx.SolutionSize; ++K) {
-                u16 RowID = Dlx.Solution[K];
-                u8 Num = (RowID % SIZE) + 1;
+    if (Solve(Dlx)) {
+        for (u32 K = 0; K < Dlx->SolutionSize; ++K) {
+            u16 RowID = Dlx->Solution[K];
+            u8 Num = (RowID % SIZE) + 1;
 
-                RowID /= SIZE;
+            RowID /= SIZE;
 
-                u16 J = RowID % SIZE;
+            u16 J = RowID % SIZE;
 
-                RowID /= SIZE;
+            RowID /= SIZE;
 
-                u16 I = RowID;
+            u16 I = RowID;
 
-                Board[I * SIZE + J] = Num + '0';
-            }
+            Board[I * SIZE + J] = Num + '0';
+        }
+    } else {
+        LockedAddAndReturnPreviousValue(&Queue->PuzzlesFailed, 1);
+    }
+
+    LockedAddAndReturnPreviousValue(&Queue->PuzzlesCompleted, 1);
+
+    return TRUE;
+}
+
+int
+main(int ArgC, char** ArgV)
+{
+    if (ArgC != 2) {
+        printf("Usage: ./sudsolve <sudoku_file>\n");
+
+        return 1;
+    }
+
+    u32 CoreCount = GetCPUCoreCount();
+    FileContents PuzzleInput = ReadEntireFile(ArgV[1]);
+    char* PuzzleInputData = (char*) PuzzleInput.Data;
+    u32 P = 0;
+
+    while (PuzzleInputData[P] != '\n')
+        ++P;
+    ++P;
+
+    u32 PuzzleDataSize = PuzzleInput.DataSize - P;
+    u32 TotalPuzzles = (PuzzleDataSize + 81) / 82;
+    u32 OutputSize = P + TotalPuzzles * 164;
+    char* Output = (char*) malloc(OutputSize + 2);
+
+    MemCpy(Output, PuzzleInputData, P);
+
+    u32 InOffs = P;
+    u32 OutOffs = P;
+    WorkQueue Queue = {};
+
+    Queue.WorkOrders = (WorkOrder*) malloc(TotalPuzzles * sizeof(WorkOrder));
+    MemSet(Queue.WorkOrders, 0, TotalPuzzles * sizeof(WorkOrder));
+
+    for (u32 I = 0; I < TotalPuzzles; ++I) {
+        MemCpy(Output + OutOffs, PuzzleInputData + InOffs, 81);
+        OutOffs += 81;
+        Output[OutOffs++] = ',';
+        MemCpy(Output + OutOffs, PuzzleInputData + InOffs, 81);
+
+        WorkOrder* Order = Queue.WorkOrders + Queue.WorkOrdersCount++;
+        DLX* Dlx = &Order->State;
+
+        Dlx->NodesUsedCount = 0;
+        Dlx->SolutionSize = 0;
+        Dlx->Head.Left = &Dlx->Head;
+        Dlx->Head.Right = &Dlx->Head;
+        Dlx->Head.Up = &Dlx->Head;
+        Dlx->Head.Down = &Dlx->Head;
+        Dlx->Head.ColID = -1;
+
+        for (u16 I = 0; I < MAX_COLS; ++I) {
+            Node *ColNode = &Dlx->Columns[I];
+
+            ColNode->ColID = I;
+            ColNode->Up = ColNode;
+            ColNode->Down = ColNode;
+            ColNode->Left = Dlx->Head.Left;
+            ColNode->Right = &Dlx->Head;
+            Dlx->Head.Left->Right = ColNode;
+            Dlx->Head.Left = ColNode;
+            ColNode->Count = 0;
         }
 
+        Order->Board = Output + OutOffs;
         OutOffs += 81;
         Output[OutOffs++] = '\n';
         InOffs += 82;
     }
 
-    PuzzleFile = fopen("./PuzzleOutput.txt", "wb");
+    LockedAddAndReturnPreviousValue(&Queue.NextWorkOrderIndex, 0);
+    BEGIN_TIMER(SolvePuzzles);
 
-    if (!PuzzleFile) {
-        printf("Could not open \"PuzzleOutput.txt\"\n");
-        free(String);
+    for (u32 CoreIndex = 0; CoreIndex < (CoreCount - 1); ++CoreIndex)
+        CreateWorkThread(&Queue);
+
+    while (Queue.PuzzlesCompleted < TotalPuzzles) {
+        if (SolvePuzzle(&Queue)) {
+            u32 Progress = 100 * (u32) Queue.PuzzlesCompleted / TotalPuzzles;
+
+            printf("\r[INFO]\t%3d%% complete", Progress);
+            fflush(stdout);
+        }
+    }
+
+    END_TIMER(SolvePuzzles);
+    printf(
+        "\r[INFO]\t100%% complete\n\n"
+        "**********************************************************\n"
+        "** STATISTICS\n"
+        "**********************************************************\n"
+        "** Failed                :  %8llu puzzles\n" 
+        "** Solved                :  %8llu puzzles\n" 
+        "** TotalTimeSolvePuzzles : ~%8lu ms\n" 
+        "** TimePerPuzzle         : ~%.6f ms\n" 
+        "**********************************************************\n\n",
+        Queue.PuzzlesFailed,
+        TotalPuzzles - Queue.PuzzlesFailed,
+         TotalTimeSolvePuzzles,
+        ((f64) TotalTimeSolvePuzzles / TotalPuzzles)
+    );
+
+    if (!WriteEntireFile((char*) "./PuzzleOutput.txt", Output, OutOffs)) {
         free(Output);
+        FreeFileData(PuzzleInput.Data);
 
         return 3;
     }
 
-    fwrite(Output, 1, OutOffs, PuzzleFile);
-    fclose(PuzzleFile);
-    free(String);
     free(Output);
+    FreeFileData(PuzzleInput.Data);
 
     return 0;
 }
