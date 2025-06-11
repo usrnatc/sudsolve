@@ -608,7 +608,7 @@ main(int ArgC, char** ArgV)
         "**********************************************************\n\n",
         Queue.PuzzlesFailed,
         TotalPuzzles - Queue.PuzzlesFailed,
-         TotalTimeSolvePuzzles,
+        TotalTimeSolvePuzzles,
         ((f64) TotalTimeSolvePuzzles / TotalPuzzles)
     );
 
