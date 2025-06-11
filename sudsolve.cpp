@@ -12,6 +12,7 @@
     #include <fcntl.h>
     #include <unistd.h>
     #include <pthread.h>
+    #include <sys/mman.h>
 #endif
 
 #include "sudsolve.h"
@@ -59,10 +60,10 @@ PrintBoard(char* Board)
 #if defined(_WIN32)
 
 void
-FreeFileData(void* FileData)
+FreeFileData(FileContents* Contents)
 {
-    if (FileData)
-        VirtualFree(FileData, 0, MEM_RELEASE);
+    if (Contents && Contents->Data)
+        VirtualFree(Contents->Data, 0, MEM_RELEASE);
 }
 
 FileContents
@@ -87,12 +88,12 @@ ReadEntireFile(char* FileName)
                         Result.DataSize = FileSize32;
                     } else {
                         printf("[ERROR] Failed to read entire file, truncated read\n");
-                        FreeFileData(Result.Data);
+                        FreeFileData(&Result);
                         Result.Data = NULL;
                     }
                 } else {
                     printf("[ERROR] Failed to read file\n");
-                    FreeFileData(Result.Data);
+                    FreeFileData(&Result);
                     Result.Data = NULL;
                 }
             } else {
@@ -191,10 +192,10 @@ GetWallTime(void)
 #elif defined(__linux__)
 
 void
-FreeFileData(void* FileData)
+FreeFileData(FileContents* Contents)
 {
-    if (FileData)
-        free(FileData);
+    if (Contents && Contents->Data)
+        munmap(Contents->Data, Contents->DataSize);
 }
 
 FileContents
@@ -203,26 +204,20 @@ ReadEntireFile(char* FileName)
     FileContents Result = {};
     i32 FileDescriptor = open(FileName, O_RDONLY);
 
-    if (FileDescriptor > 0) {
+    if (FileDescriptor != -1) {
         struct stat StatBuf = {};
-        u32 FStateResult = fstat(FileDescriptor, &StatBuf);
+        i32 StatBufResult = fstat(FileDescriptor, &StatBuf);
 
-        if (!FStateResult) {
-            u32 FileSize = StatBuf.st_size;
-            Result.Data = malloc(FileSize);
+        if (StatBufResult != -1) {
+            u32 FileSize32 = (u32) StatBuf.st_size;
 
-            if (Result.Data) {
-                u32 BytesRead = read(FileDescriptor, Result.Data, FileSize);
+            Result.Data = mmap(NULL, FileSize32, PROT_READ, MAP_PRIVATE, FileDescriptor, 0);
 
-                if (BytesRead == FileSize) {
-                    Result.DataSize = FileSize;
-                } else {
-                    printf("[ERROR] Failed to read entire file, truncated read\n");
-                    FreeFileData(Result.Data);
-                    Result.Data = NULL;
-                }
+            if (Result.Data != MAP_FAILED) {
+                Result.DataSize = FileSize32;
+                madvise(Result.Data, Result.DataSize, MADV_WILLNEED);
             } else {
-                printf("[ERROR] Failed to allocate memory for file\n");
+                printf("[ERROR] Failed to map file\n");
             }
         } else {
             printf("[ERROR] Failed to get file size\n");
@@ -230,7 +225,7 @@ ReadEntireFile(char* FileName)
 
         close(FileDescriptor);
     } else {
-        printf("[ERROR] Failed to create file for reading\n");
+        printf("[ERROR] Failed to open file for reading\n");
     }
 
     return Result;
@@ -645,13 +640,13 @@ main(int ArgC, char** ArgV)
 
     if (!WriteEntireFile((char*) "./PuzzleOutput.txt", Output, OutOffs)) {
         free(Output);
-        FreeFileData(PuzzleInput.Data);
+        FreeFileData(&PuzzleInput);
 
         return 3;
     }
 
     free(Output);
-    FreeFileData(PuzzleInput.Data);
+    FreeFileData(&PuzzleInput);
 
     return 0;
 }
