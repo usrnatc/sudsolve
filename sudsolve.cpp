@@ -1,11 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #if defined(_WIN32)
     #define WIN32_LEAN_AND_MEAN
     #include <windows.h>
 #elif defined(__linux__)
+    #include <time.h>
+    #include <sys/time.h>
     #include <sched.h>
     #include <sys/stat.h>
     #include <fcntl.h>
@@ -33,6 +34,283 @@ MemSet(void* _Dst, const u8 Val, u64 N)
     for (u64 I = 0; I < N; ++I)
         Dst[I] = Val;
 }
+
+
+void inline
+PrintBoard(char* Board)
+{
+    printf("+---+---+---+---+---+---+---+---+---+\n");
+    for (u8 I = 0; I < SIZE; ++I) {
+        for (u8 J = 0; J < SIZE; ++J) {
+            u8 Char;
+
+            if (Board[I * SIZE + J] == UNKNOWN_CELL)
+                Char = ' ';
+            else
+                Char = Board[I * SIZE + J];
+
+            printf("| %c ", Char);
+        }
+        printf("|\n+---+---+---+---+---+---+---+---+---+\n");
+    }
+    printf("\n");
+}
+
+#if defined(_WIN32)
+
+void
+FreeFileData(void* FileData)
+{
+    if (FileData)
+        VirtualFree(FileData, 0, MEM_RELEASE);
+}
+
+FileContents
+ReadEntireFile(char* FileName)
+{
+    FileContents Result = {};
+    HANDLE FileHandle = CreateFile(FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (FileHandle != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER FileSize;
+
+        if (GetFileSizeEx(FileHandle, &FileSize)) {
+            u32 FileSize32 = (u32) FileSize.QuadPart;
+
+            Result.Data = VirtualAlloc(NULL, FileSize32, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+
+            if (Result.Data) {
+                u32 BytesRead;
+
+                if (ReadFile(FileHandle, Result.Data, FileSize32, (LPDWORD) &BytesRead, NULL)) {
+                    if (FileSize32 == BytesRead) {
+                        Result.DataSize = FileSize32;
+                    } else {
+                        printf("[ERROR] Failed to read entire file, truncated read\n");
+                        FreeFileData(Result.Data);
+                        Result.Data = NULL;
+                    }
+                } else {
+                    printf("[ERROR] Failed to read file\n");
+                    FreeFileData(Result.Data);
+                    Result.Data = NULL;
+                }
+            } else {
+                printf("[ERROR] Failed to allocate memory for file\n");
+            }
+        } else {
+            printf("[ERROR] Failed to get file size\n");
+        }
+
+        CloseHandle(FileHandle);
+    } else {
+        printf("[ERROR] Failed to create file for reading\n");
+    }
+
+    return Result;
+}
+
+b8
+WriteEntireFile(char* FileName, void* Data, u32 DataSize)
+{
+    b8 Result = FALSE;
+    HANDLE FileHandle = CreateFile(FileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+
+    if (FileHandle != INVALID_HANDLE_VALUE) {
+        u32 BytesWritten;
+
+        if (WriteFile(FileHandle, Data, DataSize, (LPDWORD) &BytesWritten, NULL)) {
+            if (DataSize == BytesWritten)
+                Result = TRUE;
+            else
+                printf("[ERROR] Failed to write entire file, truncated write\n");
+        } else {
+            printf("[ERROR] Failed to write file\n");
+        }
+
+        CloseHandle(FileHandle);
+    } else {
+        printf("[ERROR] Failed to create file for writing\n");
+    }
+
+    return Result;
+}
+
+u64
+LockedAddAndReturnPreviousValue(u64 volatile* Value, u64 Delta)
+{
+    u64 Result = InterlockedExchangeAdd64((volatile LONG64*) Value, Delta);
+
+    return Result;
+}
+
+DWORD WINAPI
+WorkerThread(void* Parameter)
+{
+    WorkQueue* Queue = (WorkQueue*) Parameter;
+
+    while (SolvePuzzle(Queue)) {}
+
+    return 0;
+}
+
+static void
+CreateWorkThread(void* Parameter)
+{
+    DWORD ThreadID;
+    HANDLE ThreadHandle = CreateThread(NULL, 0, WorkerThread, Parameter, 0, &ThreadID);
+
+    CloseHandle(ThreadHandle);
+}
+
+static u32
+GetCPUCoreCount(void)
+{
+    SYSTEM_INFO Info;
+
+    GetSystemInfo(&Info);
+
+    return Info.dwNumberOfProcessors;
+}
+
+f64 inline
+GetWallTime(void)
+{
+    LARGE_INTEGER Time;
+    LARGE_INTEGER Freq;
+
+    if (!QueryPerformanceFrequency(&Freq))
+        return 0.0;
+
+    if (!QueryPerformanceCounter(&Time))
+        return 0.0;
+
+    return ((f64) Time.QuadPart / Freq.QuadPart) * 1000.0;
+}
+
+#elif defined(__linux__)
+
+void
+FreeFileData(void* FileData)
+{
+    if (FileData)
+        free(FileData);
+}
+
+FileContents
+ReadEntireFile(char* FileName)
+{
+    FileContents Result = {};
+    i32 FileDescriptor = open(FileName, O_RDONLY);
+
+    if (FileDescriptor > 0) {
+        struct stat StatBuf = {};
+        u32 FStateResult = fstat(FileDescriptor, &StatBuf);
+
+        if (!FStateResult) {
+            u32 FileSize = StatBuf.st_size;
+            Result.Data = malloc(FileSize);
+
+            if (Result.Data) {
+                u32 BytesRead = read(FileDescriptor, Result.Data, FileSize);
+
+                if (BytesRead == FileSize) {
+                    Result.DataSize = FileSize;
+                } else {
+                    printf("[ERROR] Failed to read entire file, truncated read\n");
+                    FreeFileData(Result.Data);
+                    Result.Data = NULL;
+                }
+            } else {
+                printf("[ERROR] Failed to allocate memory for file\n");
+            }
+        } else {
+            printf("[ERROR] Failed to get file size\n");
+        }
+
+        close(FileDescriptor);
+    } else {
+        printf("[ERROR] Failed to create file for reading\n");
+    }
+
+    return Result;
+}
+
+b8
+WriteEntireFile(char* FileName, void* Data, u32 DataSize)
+{
+    b8 Result = FALSE;
+    i32 FileDescriptor = open(FileName, O_WRONLY | O_CREAT, 0777);
+
+    if (FileDescriptor > 0) {
+        i32 BytesWritten = write(FileDescriptor, Data, DataSize);
+
+        if (BytesWritten == DataSize)
+            Result = TRUE;
+        else
+            printf("[ERROR] Failed to write entire file, truncated write\n");
+
+        close(FileDescriptor);
+    } else {
+        printf("[ERROR] Failed to open file for writing\n");
+    }
+
+    return Result;
+}
+
+u64
+LockedAddAndReturnPreviousValue(u64 volatile* Value, u64 Delta)
+{
+    u64 Result = __sync_fetch_and_add(Value, Delta);
+
+    return Result;
+}
+
+void*
+WorkerThread(void* Parameter)
+{
+    WorkQueue* Queue = (WorkQueue*) Parameter;
+
+    while (SolvePuzzle(Queue)) {}
+
+    return 0;
+}
+
+static void
+CreateWorkThread(void* Parameter)
+{
+    pthread_t ThreadID;
+
+    pthread_create(&ThreadID, NULL, WorkerThread, Parameter);
+}
+
+static u32
+GetCPUCoreCount(void)
+{
+    cpu_set_t CPUSet;
+
+    sched_getaffinity(0, sizeof(CPUSet), &CPUSet);
+
+    return CPU_COUNT(&CPUSet);
+}
+
+f64 inline
+GetWallTime(void)
+{
+    struct timeval Time;
+
+    if (gettimeofday(&Time, NULL))
+        return 0.0;
+
+    return ((f64) Time.tv_sec + ((f64) Time.tv_usec * 0.000001)) * 1000.0;
+}
+
+#else
+    #error "Bad Operating System"
+#endif
+
+#define BEGIN_TIMER(Name) f64 StartTime ## Name = GetWallTime();
+#define END_TIMER(Name) f64 EndTime ## Name = GetWallTime(); f64 TotalTime ## Name = EndTime ## Name - StartTime ## Name
 
 void 
 AddRow(DLX *Dlx, u16 RowIdx, u16 ColIdx[4]) 
@@ -163,253 +441,6 @@ Solve(DLX *Dlx)
 
     return FALSE;
 }
-
-void inline
-PrintBoard(char* Board)
-{
-    printf("+---+---+---+---+---+---+---+---+---+\n");
-    for (u8 I = 0; I < SIZE; ++I) {
-        for (u8 J = 0; J < SIZE; ++J) {
-            u8 Char;
-
-            if (Board[I * SIZE + J] == UNKNOWN_CELL)
-                Char = ' ';
-            else
-                Char = Board[I * SIZE + J];
-
-            printf("| %c ", Char);
-        }
-        printf("|\n+---+---+---+---+---+---+---+---+---+\n");
-    }
-    printf("\n");
-}
-
-#if defined(_WIN32)
-
-void
-FreeFileData(void* FileData)
-{
-    if (FileData)
-        VirtualFree(FileData, 0, MEM_RELEASE);
-}
-
-FileContents
-ReadEntireFile(char* FileName)
-{
-    FileContents Result = {};
-    HANDLE FileHandle = CreateFile(FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-
-    if (FileHandle != INVALID_HANDLE_VALUE) {
-        LARGE_INTEGER FileSize;
-
-        if (GetFileSizeEx(FileHandle, &FileSize)) {
-            u32 FileSize32 = (u32) FileSize.QuadPart;
-
-            Result.Data = VirtualAlloc(NULL, FileSize32, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-
-            if (Result.Data) {
-                u32 BytesRead;
-
-                if (ReadFile(FileHandle, Result.Data, FileSize32, (LPDWORD) &BytesRead, NULL)) {
-                    if (FileSize32 == BytesRead) {
-                        Result.DataSize = FileSize32;
-                    } else {
-                        printf("[ERROR] Failed to read entire file, truncated read\n");
-                        FreeFileData(Result.Data);
-                        Result.Data = NULL;
-                    }
-                } else {
-                    printf("[ERROR] Failed to read file\n");
-                    FreeFileData(Result.Data);
-                    Result.Data = NULL;
-                }
-            } else {
-                printf("[ERROR] Failed to allocate memory for file\n");
-            }
-        } else {
-            printf("[ERROR] Failed to get file size\n");
-        }
-
-        CloseHandle(FileHandle);
-    } else {
-        printf("[ERROR] Failed to create file for reading\n");
-    }
-
-    return Result;
-}
-
-b8
-WriteEntireFile(char* FileName, void* Data, u32 DataSize)
-{
-    b8 Result = FALSE;
-    HANDLE FileHandle = CreateFile(FileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-
-    if (FileHandle != INVALID_HANDLE_VALUE) {
-        u32 BytesWritten;
-
-        if (WriteFile(FileHandle, Data, DataSize, (LPDWORD) &BytesWritten, NULL)) {
-            if (DataSize == BytesWritten)
-                Result = TRUE;
-            else
-                printf("[ERROR] Failed to write entire file, truncated write\n");
-        } else {
-            printf("[ERROR] Failed to write file\n");
-        }
-
-        CloseHandle(FileHandle);
-    } else {
-        printf("[ERROR] Failed to create file for writing\n");
-    }
-
-    return Result;
-}
-
-u64
-LockedAddAndReturnPreviousValue(u64 volatile* Value, u64 Delta)
-{
-    u64 Result = InterlockedExchangeAdd64((volatile LONG64*) Value, Delta);
-
-    return Result;
-}
-
-
-DWORD WINAPI
-WorkerThread(void* Parameter)
-{
-    WorkQueue* Queue = (WorkQueue*) Parameter;
-
-    while (SolvePuzzle(Queue)) {}
-
-    return 0;
-}
-
-static void
-CreateWorkThread(void* Parameter)
-{
-    DWORD ThreadID;
-    HANDLE ThreadHandle = CreateThread(NULL, 0, WorkerThread, Parameter, 0, &ThreadID);
-
-    CloseHandle(ThreadHandle);
-}
-
-static u32
-GetCPUCoreCount(void)
-{
-    SYSTEM_INFO Info;
-
-    GetSystemInfo(&Info);
-
-    return Info.dwNumberOfProcessors;
-}
-
-#elif defined(__linux__)
-
-void
-FreeFileData(void* FileData)
-{
-    if (FileData)
-        free(FileData);
-}
-
-FileContents
-ReadEntireFile(char* FileName)
-{
-    FileContents Result = {};
-    i32 FileDescriptor = open(FileName, O_RDONLY);
-
-    if (FileDescriptor > 0) {
-        struct stat StatBuf = {};
-        u32 FStateResult = fstat(FileDescriptor, &StatBuf);
-
-        if (!FStateResult) {
-            u32 FileSize = StatBuf.st_size;
-            Result.Data = malloc(FileSize);
-
-            if (Result.Data) {
-                u32 BytesRead = read(FileDescriptor, Result.Data, FileSize);
-
-                if (BytesRead == FileSize) {
-                    Result.DataSize = FileSize;
-                } else {
-                    printf("[ERROR] Failed to read entire file, truncated read\n");
-                    FreeFileData(Result.Data);
-                    Result.Data = NULL;
-                }
-            } else {
-                printf("[ERROR] Failed to allocate memory for file\n");
-            }
-        } else {
-            printf("[ERROR] Failed to get file size\n");
-        }
-
-        close(FileDescriptor);
-    } else {
-        printf("[ERROR] Failed to create file for reading\n");
-    }
-
-    return Result;
-}
-
-b8
-WriteEntireFile(char* FileName, void* Data, u32 DataSize)
-{
-    b8 Result = FALSE;
-    i32 FileDescriptor = open(FileName, O_WRONLY | O_CREAT, 0777);
-
-    if (FileDescriptor > 0) {
-        i32 BytesWritten = write(FileDescriptor, Data, DataSize);
-
-        if (BytesWritten == DataSize)
-            Result = TRUE;
-        else
-            printf("[ERROR] Failed to write entire file, truncated write\n");
-
-        close(FileDescriptor);
-    } else {
-        printf("[ERROR] Failed to open file for writing\n");
-    }
-
-    return Result;
-}
-
-u64
-LockedAddAndReturnPreviousValue(u64 volatile* Value, u64 Delta)
-{
-    u64 Result = __sync_fetch_and_add(Value, Delta);
-
-    return Result;
-}
-
-void*
-WorkerThread(void* Parameter)
-{
-    WorkQueue* Queue = (WorkQueue*) Parameter;
-
-    while (SolvePuzzle(Queue)) {}
-
-    return 0;
-}
-
-static void
-CreateWorkThread(void* Parameter)
-{
-    pthread_t ThreadID;
-
-    pthread_create(&ThreadID, NULL, WorkerThread, Parameter);
-}
-
-static u32
-GetCPUCoreCount(void)
-{
-    cpu_set_t CPUSet;
-
-    sched_getaffinity(0, sizeof(CPUSet), &CPUSet);
-
-    return CPU_COUNT(&CPUSet);
-}
-#else
-    #error "Bad Operating System"
-#endif
 
 b8
 SolvePuzzle(WorkQueue* Queue)
@@ -601,10 +632,10 @@ main(int ArgC, char** ArgV)
         "**********************************************************\n"
         "** STATISTICS\n"
         "**********************************************************\n"
-        "** Failed                :  %8llu puzzles\n" 
-        "** Solved                :  %8llu puzzles\n" 
-        "** TotalTimeSolvePuzzles : ~%8lu ms\n" 
-        "** TimePerPuzzle         : ~%.6f ms\n" 
+        "** Failed                :  %15llu puzzles\n" 
+        "** Solved                :  %15llu puzzles\n" 
+        "** TotalTimeSolvePuzzles : ~%15f ms\n" 
+        "** TimePerPuzzle         : ~%15f ms\n" 
         "**********************************************************\n\n",
         Queue.PuzzlesFailed,
         TotalPuzzles - Queue.PuzzlesFailed,

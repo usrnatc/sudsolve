@@ -18,8 +18,6 @@ typedef u8       b8;
 #endif
 
 #define ARRAY_COUNT(X) (sizeof(X) / sizeof(*(X)))
-#define BEGIN_TIMER(Name) clock_t StartTime ## Name = clock();
-#define END_TIMER(Name) clock_t EndTime ## Name = clock(); clock_t TotalTime ## Name = EndTime ## Name - StartTime ## Name
 
 #define SIZE            9
 #define BOX_SIZE        3
