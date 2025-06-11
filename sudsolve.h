@@ -19,6 +19,14 @@ typedef u8       b8;
 
 #define ARRAY_COUNT(X) (sizeof(X) / sizeof(*(X)))
 
+#if defined(_WIN32)
+    #define THREAD_LOCAL __declspec(thread)
+#elif defined(__linux__)
+    #define THREAD_LOCAL __thread
+#else
+    #error "Bad Operating System"
+#endif
+
 #define SIZE            9
 #define BOX_SIZE        3
 #define MAX_ROWS        (SIZE * SIZE * SIZE)
@@ -56,11 +64,13 @@ struct WorkOrder {
 };
 
 struct WorkQueue {
-    WorkOrder* WorkOrders;
-    volatile u64 NextWorkOrderIndex;
+    char* OutputBuffer;
+    char* InputPuzzles;
+    volatile u64 NextPuzzleIndex;
     volatile u64 PuzzlesCompleted;
     volatile u64 PuzzlesFailed;
-    u32 WorkOrdersCount;
+    u32 HeaderSize;
+    u32 TotalPuzzles;
 };
 
 struct FileContents {

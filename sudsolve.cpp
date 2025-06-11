@@ -17,6 +17,8 @@
 
 #include "sudsolve.h"
 
+THREAD_LOCAL static WorkOrder* LocalWorkOrder = NULL;
+
 void inline
 MemCpy(void* _Dst, const void* _Src, u64 N)
 {
@@ -152,6 +154,11 @@ WorkerThread(void* Parameter)
 
     while (SolvePuzzle(Queue)) {}
 
+    if (LocalWorkOrder) {
+        free(LocalWorkOrder);
+        LocalWorkOrder = NULL;
+    }
+
     return 0;
 }
 
@@ -268,7 +275,12 @@ WorkerThread(void* Parameter)
 
     while (SolvePuzzle(Queue)) {}
 
-    return 0;
+    if (LocalWorkOrder) {
+        free(LocalWorkOrder);
+        LocalWorkOrder = NULL;
+    }
+
+    return NULL;
 }
 
 static void
@@ -440,36 +452,63 @@ Solve(DLX *Dlx)
 b8
 SolvePuzzle(WorkQueue* Queue)
 {
-    u64 WorkOrderIdx = LockedAddAndReturnPreviousValue(&Queue->NextWorkOrderIndex, 1);
+    u64 PuzzleIdx = LockedAddAndReturnPreviousValue(&Queue->NextPuzzleIndex, 1);
 
-    if (WorkOrderIdx >= Queue->WorkOrdersCount)
+    if (PuzzleIdx >= Queue->TotalPuzzles)
         return FALSE;
 
-    WorkOrder* Order = Queue->WorkOrders + WorkOrderIdx;
+    if (!LocalWorkOrder)
+        LocalWorkOrder = (WorkOrder*) malloc(sizeof(WorkOrder));
+
+    WorkOrder* Order = LocalWorkOrder;
+
+    MemSet(Order, 0, sizeof(WorkOrder));
+
     DLX* Dlx = &Order->State;
-    char* Board = Order->Board;
-    u16* InitialRowHas = Order->InitialRowHas;
-    u16* InitialColHas = Order->InitialColHas;
-    u16* InitialBoxHas = Order->InitialBoxHas;
+
+    Dlx->Head.Left = &Dlx->Head;
+    Dlx->Head.Right = &Dlx->Head;
+    Dlx->Head.Up = &Dlx->Head;
+    Dlx->Head.Down = &Dlx->Head;
+    Dlx->Head.ColID = -1;
+
+    for (u16 I = 0; I < MAX_COLS; ++I) {
+        Node* ColNode = &Dlx->Columns[I];
+
+        ColNode->ColID = I;
+        ColNode->Up = ColNode;
+        ColNode->Down = ColNode;
+        ColNode->Left = Dlx->Head.Left;
+        ColNode->Right = &Dlx->Head;
+        Dlx->Head.Left->Right = ColNode;
+        Dlx->Head.Left = ColNode;
+        ColNode->Count = 0;
+    }
+
+    char* InputPuzzle = Queue->InputPuzzles + (PuzzleIdx * 82);
+    u32 OutputOffs = Queue->HeaderSize + (PuzzleIdx * 164) + 82;
+
+    Order->Board = Queue->OutputBuffer + OutputOffs;
+    MemCpy(Order->Board, InputPuzzle, SIZE * SIZE);
 
     for (u8 RInit = 0; RInit < SIZE; ++RInit) {
         for (u8 CInit = 0; CInit < SIZE; ++CInit) {
-            if (Board[RInit * SIZE + CInit] != UNKNOWN_CELL) {
-                u8 Val = Board[RInit * SIZE + CInit] - '0';
+            if (Order->Board[RInit * SIZE + CInit] != UNKNOWN_CELL) {
+                u8 Val = Order->Board[RInit * SIZE + CInit] - '0';
                 u8 BoxIdx = (RInit / BOX_SIZE) * BOX_SIZE + (CInit / BOX_SIZE);
 
-                InitialRowHas[RInit] |= (1 << Val);
-                InitialColHas[CInit] |= (1 << Val);
-                InitialBoxHas[BoxIdx] |= (1 << Val);
+                Order->InitialRowHas[RInit] |= (1 << Val);
+                Order->InitialColHas[CInit] |= (1 << Val);
+                Order->InitialBoxHas[BoxIdx] |= (1 << Val);
             }
         }
     }
 
     for (u8 R = 0; R < SIZE; ++R) {
         for (u8 C = 0; C < SIZE; ++C) {
-            if (Board[R * SIZE + C] == UNKNOWN_CELL) {
+            if (Order->Board[R * SIZE + C] == UNKNOWN_CELL) {
                 for (u8 Num = 1; Num <= SIZE; Num++) {
-                    if (!IsCandidateValid(R, C, Num, InitialRowHas, InitialColHas, InitialBoxHas))
+                    if (!IsCandidateValid(R, C, Num, Order->InitialRowHas, Order->InitialColHas, Order->InitialBoxHas))
                         continue;
 
                     u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
@@ -484,7 +523,7 @@ SolvePuzzle(WorkQueue* Queue)
                     AddRow(Dlx, RowIdx, ColIdx);
                 }
             } else {
-                u8 Num = Board[R * SIZE + C] - '0';
+                u8 Num = Order->Board[R * SIZE + C] - '0';
                 u16 RowIdx = R * SIZE * SIZE + C * SIZE + (Num - 1);
                 u16 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
                 u16 ColIdx[4] = {
@@ -527,7 +566,7 @@ SolvePuzzle(WorkQueue* Queue)
 
             u16 I = RowID;
 
-            Board[I * SIZE + J] = Num + '0';
+            Order->Board[I * SIZE + J] = Num + '0';
         }
     } else {
         LockedAddAndReturnPreviousValue(&Queue->PuzzlesFailed, 1);
@@ -563,50 +602,29 @@ main(int ArgC, char** ArgV)
 
     MemCpy(Output, PuzzleInputData, P);
 
-    u32 InOffs = P;
     u32 OutOffs = P;
-    WorkQueue Queue = {};
-
-    Queue.WorkOrders = (WorkOrder*) malloc(TotalPuzzles * sizeof(WorkOrder));
-    MemSet(Queue.WorkOrders, 0, TotalPuzzles * sizeof(WorkOrder));
 
     for (u32 I = 0; I < TotalPuzzles; ++I) {
+        u32 InOffs = P + I * 82;
+
         MemCpy(Output + OutOffs, PuzzleInputData + InOffs, 81);
-        OutOffs += 81;
-        Output[OutOffs++] = ',';
-        MemCpy(Output + OutOffs, PuzzleInputData + InOffs, 81);
-
-        WorkOrder* Order = Queue.WorkOrders + Queue.WorkOrdersCount++;
-        DLX* Dlx = &Order->State;
-
-        Dlx->NodesUsedCount = 0;
-        Dlx->SolutionSize = 0;
-        Dlx->Head.Left = &Dlx->Head;
-        Dlx->Head.Right = &Dlx->Head;
-        Dlx->Head.Up = &Dlx->Head;
-        Dlx->Head.Down = &Dlx->Head;
-        Dlx->Head.ColID = -1;
-
-        for (u16 I = 0; I < MAX_COLS; ++I) {
-            Node *ColNode = &Dlx->Columns[I];
-
-            ColNode->ColID = I;
-            ColNode->Up = ColNode;
-            ColNode->Down = ColNode;
-            ColNode->Left = Dlx->Head.Left;
-            ColNode->Right = &Dlx->Head;
-            Dlx->Head.Left->Right = ColNode;
-            Dlx->Head.Left = ColNode;
-            ColNode->Count = 0;
-        }
-
-        Order->Board = Output + OutOffs;
-        OutOffs += 81;
-        Output[OutOffs++] = '\n';
-        InOffs += 82;
+        Output[OutOffs + 81] = ',';
+        MemCpy(Output + OutOffs + 82, PuzzleInputData + InOffs, 81);
+        Output[OutOffs + 163] = '\n';
+        OutOffs += 164;
     }
 
-    LockedAddAndReturnPreviousValue(&Queue.NextWorkOrderIndex, 0);
+    WorkQueue Queue = {};
+
+    Queue.OutputBuffer = Output;
+    Queue.InputPuzzles = PuzzleInputData + P;
+    Queue.HeaderSize = P;
+    Queue.TotalPuzzles = TotalPuzzles;
+    Queue.NextPuzzleIndex = 0;
+    Queue.PuzzlesCompleted = 0;
+    Queue.PuzzlesFailed = 0;
+
+    LockedAddAndReturnPreviousValue(&Queue.NextPuzzleIndex, 0);
     BEGIN_TIMER(SolvePuzzles);
 
     for (u32 CoreIndex = 0; CoreIndex < (CoreCount - 1); ++CoreIndex)
