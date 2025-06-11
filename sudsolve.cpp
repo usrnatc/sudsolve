@@ -590,13 +590,19 @@ main(int ArgC, char** ArgV)
     FileContents PuzzleInput = ReadEntireFile(ArgV[1]);
     char* PuzzleInputData = (char*) PuzzleInput.Data;
     u32 P = 0;
+    u8 LineEndSize = 1;
 
     while (PuzzleInputData[P] != '\n')
         ++P;
+
+    if (P > 0 && PuzzleInputData[P - 1] == '\r')
+        LineEndSize = 2;
+
     ++P;
 
     u32 PuzzleDataSize = PuzzleInput.DataSize - P;
-    u32 TotalPuzzles = (PuzzleDataSize + 81) / 82;
+    u32 LineLengthPerPuzzle = 81 + LineEndSize;
+    u32 TotalPuzzles = (PuzzleDataSize + LineLengthPerPuzzle - 1) / LineLengthPerPuzzle;
     u32 OutputSize = P + TotalPuzzles * 164;
     char* Output = (char*) malloc(OutputSize + 2);
 
@@ -605,7 +611,7 @@ main(int ArgC, char** ArgV)
     u32 OutOffs = P;
 
     for (u32 I = 0; I < TotalPuzzles; ++I) {
-        u32 InOffs = P + I * 82;
+        u32 InOffs = P + I * LineLengthPerPuzzle;
 
         MemCpy(Output + OutOffs, PuzzleInputData + InOffs, 81);
         Output[OutOffs + 81] = ',';
