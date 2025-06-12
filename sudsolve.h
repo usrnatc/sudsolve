@@ -57,9 +57,9 @@ struct DLX {
 
 struct WorkOrder {
     DLX State;
-    u16 InitialRowHas[SIZE] = {};
-    u16 InitialColHas[SIZE] = {};
-    u16 InitialBoxHas[SIZE] = {};
+    u16 InitialRowHas[SIZE];
+    u16 InitialColHas[SIZE];
+    u16 InitialBoxHas[SIZE];
     char* Board;
 };
 

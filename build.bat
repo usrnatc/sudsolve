@@ -8,6 +8,7 @@ set CommonCompilerFlags=      ^
     /Oi                       ^
     /Ot                       ^
     /GL                       ^
+    /GT                       ^
     /Qpar                     ^
     /fp:fast                  ^
     /fp:except-               ^
