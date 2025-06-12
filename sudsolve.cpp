@@ -65,7 +65,7 @@ void
 FreeFileData(FileContents* Contents)
 {
     if (Contents && Contents->Data)
-        VirtualFree(Contents->Data, 0, MEM_RELEASE);
+        UnmapViewOfFile(Contents->Data);
 }
 
 FileContents
@@ -79,27 +79,20 @@ ReadEntireFile(char* FileName)
 
         if (GetFileSizeEx(FileHandle, &FileSize)) {
             u32 FileSize32 = (u32) FileSize.QuadPart;
+            HANDLE FileMapHandle = CreateFileMapping(FileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
 
-            Result.Data = VirtualAlloc(NULL, FileSize32, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (FileMapHandle) {
+                Result.Data = MapViewOfFile(FileMapHandle, FILE_MAP_READ, 0, 0, FileSize32);
 
-            if (Result.Data) {
-                u32 BytesRead;
-
-                if (ReadFile(FileHandle, Result.Data, FileSize32, (LPDWORD) &BytesRead, NULL)) {
-                    if (FileSize32 == BytesRead) {
-                        Result.DataSize = FileSize32;
-                    } else {
-                        printf("[ERROR] Failed to read entire file, truncated read\n");
-                        FreeFileData(&Result);
-                        Result.Data = NULL;
-                    }
+                if (Result.Data) {
+                    Result.DataSize = FileSize32;
                 } else {
-                    printf("[ERROR] Failed to read file\n");
-                    FreeFileData(&Result);
-                    Result.Data = NULL;
+                    printf("[ERROR] Failed to map view of file\n");
                 }
+
+                CloseHandle(FileMapHandle);
             } else {
-                printf("[ERROR] Failed to allocate memory for file\n");
+                printf("[ERROR] Failed to get map of file\n");
             }
         } else {
             printf("[ERROR] Failed to get file size\n");
