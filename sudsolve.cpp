@@ -438,7 +438,7 @@ Solve(DLX *Dlx)
         if (Solve(Dlx))
             return TRUE;
 
-        Dlx->SolutionSize--;
+        --Dlx->SolutionSize;
 
         for (Node *HNode = RowNode->Left; HNode != RowNode; HNode = HNode->Left)
             Uncover(HNode->Column);
@@ -666,7 +666,7 @@ main(int ArgC, char** ArgV)
         free(Output);
         FreeFileData(&PuzzleInput);
 
-        return 3;
+        return 2;
     }
 
     free(Output);
