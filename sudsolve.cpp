@@ -39,6 +39,7 @@ MemSet(void* _Dst, const u8 Val, u64 N)
 }
 
 
+
 void inline
 PrintBoard(char* Board)
 {
@@ -319,6 +320,7 @@ AddRow(DLX *Dlx, u16 RowIdx, u16 ColIdx[4])
         return;
 
     u32 BaseIdx = Dlx->NodesUsedCount;
+
     Dlx->NodesUsedCount += 4;
 
     for (u8 K = 0; K < 4; ++K) {
@@ -376,26 +378,20 @@ Uncover(Node *ColHeader)
 
 u8 inline
 IsCandidateValid(
-    u16 R, 
-    u16 C, 
+    u16 RowIdx, 
+    u16 ColIdx, 
     u16 Num, 
     u16* InitialRowHas,
     u16* InitialColHas,
     u16* InitialBoxHas
 ) {
-    u32 BoxIdx = (R / BOX_SIZE) * BOX_SIZE + (C / BOX_SIZE);
+    u32 BoxIdx = (RowIdx / BOX_SIZE) * BOX_SIZE + (ColIdx / BOX_SIZE);
     u16 Mask = (1 << Num);
+    u16 InitRowResult = InitialRowHas[RowIdx] & Mask;
+    u16 InitColResult = InitialColHas[ColIdx] & Mask;
+    u16 InitBoxResult = InitialBoxHas[BoxIdx] & Mask;
 
-    if (InitialRowHas[R] & Mask)
-        return FALSE;
-
-    if (InitialColHas[C] & Mask)
-        return FALSE;
-
-    if (InitialBoxHas[BoxIdx] & Mask)
-        return FALSE;
-
-    return TRUE;
+    return (!(InitRowResult || InitColResult || InitBoxResult));
 }
 
 u8
@@ -455,15 +451,24 @@ SolvePuzzle(WorkQueue* Queue)
 
     WorkOrder* Order = LocalWorkOrder;
 
-    MemSet(Order, 0, sizeof(WorkOrder));
+    MemSet(Order->InitialRowHas, 0, sizeof(Order->InitialRowHas));
+    MemSet(Order->InitialColHas, 0, sizeof(Order->InitialColHas));
+    MemSet(Order->InitialBoxHas, 0, sizeof(Order->InitialBoxHas));
 
     DLX* Dlx = &Order->State;
 
+    Dlx->NodesUsedCount = 0;
+    Dlx->SolutionSize = 0;
     Dlx->Head.Left = &Dlx->Head;
     Dlx->Head.Right = &Dlx->Head;
     Dlx->Head.Up = &Dlx->Head;
     Dlx->Head.Down = &Dlx->Head;
+    Dlx->Head.Column = NULL;
+    Dlx->Head.Count = 0;
+    Dlx->Head.RowID = 0;
     Dlx->Head.ColID = -1;
+    MemSet(Dlx->Solution, 0, sizeof(Dlx->Solution));
+    MemSet(Dlx->Rows, 0, sizeof(Dlx->Rows));
 
     for (u16 I = 0; I < MAX_COLS; ++I) {
         Node* ColNode = &Dlx->Columns[I];
@@ -471,11 +476,13 @@ SolvePuzzle(WorkQueue* Queue)
         ColNode->ColID = I;
         ColNode->Up = ColNode;
         ColNode->Down = ColNode;
+        ColNode->Count = 0;
+        ColNode->Column = NULL; 
+        ColNode->RowID = 0;     
         ColNode->Left = Dlx->Head.Left;
         ColNode->Right = &Dlx->Head;
         Dlx->Head.Left->Right = ColNode;
         Dlx->Head.Left = ColNode;
-        ColNode->Count = 0;
     }
 
     char* InputPuzzle = Queue->InputPuzzles + (PuzzleIdx * 82);
@@ -489,10 +496,21 @@ SolvePuzzle(WorkQueue* Queue)
             if (Order->Board[RInit * SIZE + CInit] != UNKNOWN_CELL) {
                 u8 Val = Order->Board[RInit * SIZE + CInit] - '0';
                 u8 BoxIdx = (RInit / BOX_SIZE) * BOX_SIZE + (CInit / BOX_SIZE);
+                u16 Mask = (1 << Val);
+                u16 InitRowResult = (Order->InitialRowHas[RInit] & Mask);
+                u16 InitColResult = (Order->InitialColHas[CInit] & Mask);
+                u16 InitBoxResult = (Order->InitialBoxHas[BoxIdx] & Mask);
 
-                Order->InitialRowHas[RInit] |= (1 << Val);
-                Order->InitialColHas[CInit] |= (1 << Val);
-                Order->InitialBoxHas[BoxIdx] |= (1 << Val);
+                if (InitRowResult || InitColResult || InitBoxResult) {
+                    LockedAddAndReturnPreviousValue(&Queue->PuzzlesFailed, 1);
+                    LockedAddAndReturnPreviousValue(&Queue->PuzzlesCompleted, 1);
+
+                    return TRUE;
+                }
+
+                Order->InitialRowHas[RInit] |= Mask;
+                Order->InitialColHas[CInit] |= Mask;
+                Order->InitialBoxHas[BoxIdx] |= Mask;
             }
         }
     }
@@ -538,10 +556,9 @@ SolvePuzzle(WorkQueue* Queue)
                 if (ChosenRowNode->Column->Right->Left == ChosenRowNode->Column)
                      Cover(ChosenRowNode->Column);
 
-                for (Node *NodeInRow = ChosenRowNode->Right; NodeInRow != ChosenRowNode; NodeInRow = NodeInRow->Right) {
+                for (Node *NodeInRow = ChosenRowNode->Right; NodeInRow != ChosenRowNode; NodeInRow = NodeInRow->Right)
                     if (NodeInRow->Column->Right->Left == NodeInRow->Column)
                         Cover(NodeInRow->Column);
-                }
             }
         }
     }
@@ -619,9 +636,6 @@ main(int ArgC, char** ArgV)
     Queue.InputPuzzles = PuzzleInputData + P;
     Queue.HeaderSize = P;
     Queue.TotalPuzzles = TotalPuzzles;
-    Queue.NextPuzzleIndex = 0;
-    Queue.PuzzlesCompleted = 0;
-    Queue.PuzzlesFailed = 0;
 
     LockedAddAndReturnPreviousValue(&Queue.NextPuzzleIndex, 0);
     BEGIN_TIMER(SolvePuzzles);
@@ -644,13 +658,15 @@ main(int ArgC, char** ArgV)
         "**********************************************************\n"
         "** STATISTICS\n"
         "**********************************************************\n"
-        "** Failed                :  %15llu puzzles\n" 
-        "** Solved                :  %15llu puzzles\n" 
-        "** TotalTimeSolvePuzzles : ~%15f ms\n" 
-        "** TimePerPuzzle         : ~%15f ms\n" 
+        "** Failed                :  %10llu puzzles\n" 
+        "** Solved                :  %10llu puzzles\n" 
+        "** Total                 :  %10u puzzles\n" 
+        "** TotalTimeSolvePuzzles : ~%10f ms\n" 
+        "** TimePerPuzzle         : ~%10f ms\n" 
         "**********************************************************\n\n",
         Queue.PuzzlesFailed,
         TotalPuzzles - Queue.PuzzlesFailed,
+        TotalPuzzles,
         TotalTimeSolvePuzzles,
         ((f64) TotalTimeSolvePuzzles / TotalPuzzles)
     );
